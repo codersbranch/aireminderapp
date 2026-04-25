@@ -1,65 +1,102 @@
-import time
+from __future__ import annotations
+
+from collections import defaultdict
 from datetime import datetime
-import webbrowser
+from pathlib import Path
 import os
+import time
+import webbrowser
+
 from bs4 import BeautifulSoup
 
+REMINDERS_FILE = Path("reminders.txt")
+NOTIFICATION_HTML_FILE = Path("notification.html")
 
-def read_reminders(file_path):
-    reminders = {}
-    with open(file_path, 'r') as file:
-        for line in file:
-            if '-' in line:
-                time_part, message = line.strip().split('-', 1)
-                time_str = time_part.strip()
-                msg = message.strip().strip('"')
-                reminders[time_str] = msg
+
+def read_reminders(file_path: Path) -> dict[str, list[str]]:
+    reminders: dict[str, list[str]] = defaultdict(list)
+
+    if not file_path.exists():
+        return reminders
+
+    with file_path.open("r", encoding="utf-8") as file:
+        for raw_line in file:
+            line = raw_line.strip()
+            if "-" not in line:
+                continue
+
+            time_part, message = line.split("-", 1)
+            time_str = time_part.strip()
+            msg = message.strip().strip('"')
+
+            try:
+                datetime.strptime(time_str, "%H:%M")
+            except ValueError:
+                continue
+
+            if msg:
+                reminders[time_str].append(msg)
+
     return reminders
 
 
-def write_reminder(new_reminder):   
-     # Load existing HTML file
-    with open("notification.html", "r", encoding="utf-8") as f:
-        soup = BeautifulSoup(f, "html.parser")
+def write_reminder(new_reminder: str, html_path: Path = NOTIFICATION_HTML_FILE) -> None:
+    with html_path.open("r", encoding="utf-8") as file:
+        soup = BeautifulSoup(file, "html.parser")
 
-        # Find the <ul> element
-        ul = soup.find("ul", {"id": "reminder-list"})
-        ul.clear()
-        # Create new <li> tag
-        li = soup.new_tag("li")       
-        li.append(new_reminder)      
-        ul.append(li)   
+    reminder_list = soup.find("ul", {"id": "reminder-list"})
+    if reminder_list is None:
+        raise ValueError("notification.html is missing <ul id='reminder-list'>.")
 
-        # Save updated HTML
-        with open("notification.html", "w", encoding="utf-8") as f:
-            f.write(str(soup.prettify()))
-        print("✅ Reminder added to HTML file.")
+    reminder_list.clear()
+    list_item = soup.new_tag("li")
+    list_item.append(new_reminder)
+    reminder_list.append(list_item)
+
+    with html_path.open("w", encoding="utf-8") as file:
+        file.write(soup.prettify())
+
+    print("✅ Reminder added to HTML file.")
 
 
-def open_html_file():
-    # Path to your local HTML file
-    html_file = os.path.abspath("notification.html")
-    # Convert to file URL
-    file_url = f"file://{html_file}"
-
-    # Open in default web browser
+def open_html_file(html_path: Path = NOTIFICATION_HTML_FILE) -> None:
+    file_url = f"file://{os.path.abspath(html_path)}"
     webbrowser.open(file_url)
 
-def main():
-    file_path = 'reminders.txt'
-    already_triggered = set()
+
+def main() -> None:
+    already_triggered: set[tuple[str, int]] = set()
+    reminders_by_time: dict[str, list[str]] = {}
+    last_mtime: float | None = None
 
     while True:
-        now = datetime.now().strftime('%H:%M')  # Current time in HH:MM format
-        reminders = read_reminders(file_path)
+        try:
+            mtime = REMINDERS_FILE.stat().st_mtime
+        except FileNotFoundError:
+            reminders_by_time = {}
+            last_mtime = None
+            time.sleep(2)
+            continue
 
-        if now in reminders and now not in already_triggered:
-            print(f"[{now}] Reminder: {reminders[now]}")
-            write_reminder(reminders[now])
+        if last_mtime != mtime:
+            reminders_by_time = read_reminders(REMINDERS_FILE)
+            last_mtime = mtime
+
+        now = datetime.now().strftime("%H:%M")
+        due_messages = reminders_by_time.get(now, [])
+
+        for idx, message in enumerate(due_messages):
+            reminder_key = (now, idx)
+            if reminder_key in already_triggered:
+                continue
+
+            print(f"[{now}] Reminder: {message}")
+            write_reminder(message)
             open_html_file()
-            already_triggered.add(now)
+            already_triggered.add(reminder_key)
 
         time.sleep(2)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
